@@ -1,3 +1,4 @@
+# -*- coding:utf-8 -*-
 from __future__ import division
 from builtins import bytes
 
@@ -10,6 +11,9 @@ import math
 import codecs
 import os
 
+import sys
+reload(sys)
+sys.setdefaultencoding("utf-8")
 
 parser = argparse.ArgumentParser(description='translate.py')
 onmt.Markdown.add_md_help_argument(parser)

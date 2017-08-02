@@ -7,7 +7,6 @@ from onmt.modules import aeq
 from onmt.modules.Gate import ContextGateFactory
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
-import torch.nn.functional as F
 import math
 
 
@@ -82,7 +81,6 @@ class Embeddings(nn.Module):
             emb = emb + Variable(self.pe[:emb.size(0), :1, :emb.size(2)]
                                  .expand_as(emb))
             emb = self.dropout(emb)
-
         return emb
 
 
@@ -125,11 +123,6 @@ class Encoder(nn.Module):
                  dropout=opt.dropout,
                  bidirectional=opt.brnn)
 
-        self.topic2vec = None
-        if opt.topic2vec:
-            self.topic_matrix = nn.Parameter(torch.FloatTensor(opt.topic_vec_size, opt.topic_num).uniform_(-0.01, 0.01), requires_grad=True)
-            self.topic2vec = Topic2Vec(opt)
-
     def forward(self, input, lengths=None, hidden=None):
         """
         Args:
@@ -150,22 +143,6 @@ class Encoder(nn.Module):
         # END CHECKS
 
         emb = self.embeddings(input)
-
-        # word_embedding + topic_embedding
-        if self.topic2vec is not None:
-            #Returns:
-            #   topic_vec: batch, topic_vec_size, 1
-            #   topic_dist: batch x topic_num x 1
-            topic_vec, topic_dist = self.topic2vec(emb, self.topic_matrix)
-            # print "topic_matrix", self.topic_matrix
-            # print "topic_vec", topic_vec
-            # print "emb", emb
-            topic_vec_repeat = topic_vec.repeat(1, 1, emb.size(0)).permute(2, 0, 1).contiguous()
-            # print "topic_vec_repeat", topic_vec_repeat
-            emb = emb + topic_vec_repeat
-            # print "emb", emb
-
-
         s_len, n_batch, vec_size = emb.size()
 
         if self.encoder_layer == "mean":
@@ -358,24 +335,6 @@ class Decoder(nn.Module):
         return outputs, state, attns
 
 
-class Topic2Vec(nn.Module):
-    """docstring for Topic2Vec"""
-    def __init__(self, opt):
-        super(Topic2Vec, self).__init__()
-        self.topic_matrix = nn.Parameter(torch.FloatTensor(opt.topic_vec_size, opt.topic_num), requires_grad=True)
-        
-        self.mix_of_experts = nn.ModuleList([nn.Linear() for i in opt.experts_num])
-
-        self.topic_linear = nn.Linear()
-
-    def forward(self, input):
-        topic_proportion = self.mix_of_experts(input)
-
-        topic_vec = self.topic_matrix.mul(topic_proportion)
-
-        return topic_vec, topic_proportion
-
-
 class NMTModel(nn.Module):
     def __init__(self, encoder, decoder, multigpu=False):
         self.multigpu = multigpu
@@ -417,11 +376,7 @@ class NMTModel(nn.Module):
         """
         src = src
         tgt = tgt[:-1]  # exclude last target from inputs
-        
-        # 1. encoder
         enc_hidden, context = self.encoder(src, lengths)
-
-        # 2. decoder
         enc_state = self.init_decoder_state(context, enc_hidden)
         out, dec_state, attns = self.decoder(tgt, src, context,
                                              enc_state if dec_state is None
@@ -494,87 +449,3 @@ class TransformerDecoderState(DecoderState):
 
     def repeatBeam_(self, beamSize):
         pass
-
-class Topic2Vec(nn.Module):
-
-    def __init__(self, opt):
-        super(Topic2Vec, self).__init__()
-        self.topic_type = opt.topic_type
-        if self.topic_type == "mean":
-            self.linear = onmt.modules.BottleLinear(opt.topic_vec_size, opt.topic_num)
-        elif self.topic_type == "cnn":
-            self.windows = [2, 3, 4]
-            self.convs = nn.ModuleList([nn.Conv2d(1, opt.kernel_num, (w, opt.topic_vec_size)) for w in self.windows])
-            self.full_connected = nn.Linear(len(self.windows)*opt.kernel_num, opt.topic_num)
-        
-        self.dropout = nn.Dropout(opt.dropout)
-        self.softmax = nn.Softmax()
-    
-    """
-    Topic2Vec:
-        Args:
-            input: len x batch x word_vec_size
-            topic_matrix: topic_vec_size x topic_num
-        Returns:
-            topic_vec: batch, topic_vec_size, 1
-            topic_dist: batch x topic_num x 1
-    """
-    def forward(self, input, topic_matrix):
-        if self.topic_type == "mean":
-            # print "input", input
-            topic_weights = self.linear(input) # len x batch x topic_num
-            # print "topic_weights", topic_weights.sum(0)
-            topic_dist = self.softmax(topic_weights.sum(0).squeeze(0)).unsqueeze(2)  # batch x topic_num x 1
-            # print "topic_dist", topic_dist
-        # print "topic_matrix", topic_matrix
-        elif self.topic_type == "cnn":
-            x = [F.relu(conv(input.t().unsqueeze(1))).squeeze(3) for conv in self.convs]
-            x = [F.max_pool1d(i, i.size(2)).squeeze(2) for i in x]
-            x = torch.cat(x, 1)
-            x = self.dropout(x)
-            topic_dist = self.softmax(self.full_connected(x)).unsqueeze(2)
-            # print "topic_dist", topic_dist
-
-        topic_matrix_repeat = topic_matrix.expand(topic_dist.size(0), topic_matrix.size(0), topic_matrix.size(1)) # batch x topic_vec_size x topic_num
-        topic_vec = torch.bmm(topic_matrix_repeat, topic_dist) # batch x topic_vec_size x 1
-        return topic_vec, topic_dist
-
-
-class Memnn(nn.Module):
-    """
-    Memnn:
-        Args:
-            context: seq_len, batch, rnn_size
-        Returns:
-            topic_aware_vec: batch, rnn_size, 1
-            topic_dist: batch, topic_num
-    """
-
-    def __init__(self, opt):
-        super(Memnn, self).__init__()
-        self.hops = opt.hops
-        self.softmax = nn.Softmax()
-
-    def forward(self, context, topic_matrix):
-        output = torch.sum(context.permute(1, 2, 0), 2).contiguous()
-        # print "output: ", output
-
-        # batch_size, topic_num, topic_vec_size
-        batch_topic = topic_matrix.expand(output.size(0), topic_matrix.size(0), topic_matrix.size(1)).transpose(1, 2)
-        # print "batch_topic: ", batch_topic
-
-        # topic_vec_size == rnn_size
-        for i in range(self.hops):
-            # input: batch_size * hidden
-            topic_simi = torch.bmm(batch_topic,
-                                   output)  # batch_size, topic_num, topic_vec_size * batch_size, rnn_size, 1
-            # print "topic_simi: ", topic_simi
-
-            topic_dist = self.softmax(topic_simi.squeeze(2))  # topic_dist: batch_size * topic_num
-            # print "topic_dist", topic_dist
-
-            # output: batch_size, topic_vec_size, topic_num * batch_size, topic_num, 1
-            output = torch.bmm(batch_topic.permute(0, 2, 1), topic_dist.unsqueeze(2)) + output
-            # print "output: ", output
-
-        return output, topic_dist

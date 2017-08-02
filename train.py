@@ -33,9 +33,9 @@ parser.add_argument('-train_from', default='', type=str,
 
 parser.add_argument('-layers', type=int, default=2,
                     help='Number of layers in the LSTM encoder/decoder')
-parser.add_argument('-rnn_size', type=int, default=500,
+parser.add_argument('-rnn_size', type=int, default=512,
                     help='Size of LSTM hidden states')
-parser.add_argument('-word_vec_size', type=int, default=500,
+parser.add_argument('-word_vec_size', type=int, default=512,
                     help='Word embedding sizes')
 parser.add_argument('-feature_vec_size', type=int, default=100,
                     help='Feature vec sizes')
@@ -162,6 +162,19 @@ parser.add_argument('-experiment_name', type=str, default="",
 parser.add_argument('-seed', type=int, default=-1,
                     help="""Random seed used for the experiments
                     reproducibility.""")
+
+# Topic
+parser.add_argument('-topic2vec', action="store_true",
+                    help=""" topic2vec or not""")
+parser.add_argument('-topic_vec_size', type=int, default=512,
+                    help="Print stats at this interval.")
+parser.add_argument('-topic_num', type=int, default=50,
+                    help="Print stats at this interval.")
+parser.add_argument('-topic_type', type=str, default="mean",
+                    choices=['mean', 'cnn'],
+                    help=""" The topic type to use in RNNs [mean|cnn|]""")
+parser.add_argument('-kernel_num', type=int, default=100,
+                    help="Kernel size for the conv outputs")
 
 opt = parser.parse_args()
 
