@@ -166,15 +166,31 @@ parser.add_argument('-seed', type=int, default=-1,
 # Topic
 parser.add_argument('-topic2vec', action="store_true",
                     help=""" topic2vec or not""")
+parser.add_argument('-topic_type', type=str, default="mean",
+                    choices=['mean', 'cnn'],
+                    help=""" The topic type to use in RNNs [mean|cnn|]""")
+
+parser.add_argument('-topic2vec_decoder', action="store_true",
+                    help=""" topic2vec or not""")
+parser.add_argument('-topic_type_decoder', type=str, default="concat",
+                    choices=['sum', 'concat'],
+                    help=""" The topic type to use in RNNs decoder, [sum|concat|]""")
+
 parser.add_argument('-topic_vec_size', type=int, default=512,
                     help="Print stats at this interval.")
 parser.add_argument('-topic_num', type=int, default=50,
                     help="Print stats at this interval.")
-parser.add_argument('-topic_type', type=str, default="mean",
-                    choices=['mean', 'cnn'],
-                    help=""" The topic type to use in RNNs [mean|cnn|]""")
 parser.add_argument('-kernel_num', type=int, default=100,
                     help="Kernel size for the conv outputs")
+parser.add_argument('-experts_num', type=int, default=50,
+                    help="Experts number for the word_topic probability (maybe equal to the number of topic number)")
+
+parser.add_argument('-topic_gate', type=str, default=None,
+                    choices=['source', 'target', 'both'],
+                    help="""Type of context gate to use [source|target|both].
+                    Do not select for no context gate.""")
+# parser.add_argument('-topic_gate', action="store_true",
+#                     help=""" topic gate for decoding to choose from topic or rnn sequence""")
 
 opt = parser.parse_args()
 
@@ -385,8 +401,10 @@ def main():
     if opt.copy_attn:
         generator = onmt.modules.CopyGenerator(opt, dicts['src'], dicts['tgt'])
     else:
+        decode_size = opt.rnn_size + opt.topic_vec_size if opt.topic2vec_decoder else opt.rnn_size
         generator = nn.Sequential(
-            nn.Linear(opt.rnn_size, dicts['tgt'].size()),
+            # nn.Linear(opt.rnn_size, dicts['tgt'].size()),
+            nn.Linear(decode_size, dicts['tgt'].size()),
             nn.LogSoftmax())
         if opt.share_decoder_embeddings:
             generator[0].weight = decoder.embeddings.word_lut.weight

@@ -106,7 +106,7 @@ class Translator(object):
         batchSize = batch.batchSize
 
         #  (1) run the encoder on the src
-        encStates, context = self.model.encoder(
+        encStates, context, topic_vec = self.model.encoder(
             batch.src, lengths=batch.lengths)
         encStates = self.model.init_decoder_state(context, encStates)
 
@@ -133,7 +133,8 @@ class Translator(object):
             decOut, decStates, attn = self.model.decoder(batch.tgt[:-1],
                                                          batch.src,
                                                          context,
-                                                         decStates)
+                                                         decStates, 
+                                                         topic_vec)                 # zeng: topic biased decoding
             for dec_t, tgt_t in zip(decOut, batch.tgt[1:].data):
                 gen_t = self.model.generator.forward(dec_t)
                 tgt_t = tgt_t.unsqueeze(1)

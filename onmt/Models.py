@@ -152,6 +152,8 @@ class Encoder(nn.Module):
         emb = self.embeddings(input)
 
         # word_embedding + topic_embedding
+        topic_vec = None
+        topic_dist = None
         if self.topic2vec is not None:
             #Returns:
             #   topic_vec: batch, topic_vec_size, 1
@@ -172,14 +174,14 @@ class Encoder(nn.Module):
             # No RNN, just take mean as final state.
             mean = emb.mean(0) \
                    .expand(self.layers, n_batch, vec_size)
-            return (mean, mean), emb
+            return (mean, mean), emb, topic_vec
 
         elif self.encoder_layer == "transformer":
             # Self-attention tranformer.
             out = emb.transpose(0, 1).contiguous()
             for i in range(self.layers):
                 out = self.transformer[i](out, input[:, :, 0].transpose(0, 1))
-            return Variable(emb.data), out.transpose(0, 1).contiguous()
+            return Variable(emb.data), out.transpose(0, 1).contiguous(), topic_vec
         else:
             # Standard RNN encoder.
             packed_emb = emb
@@ -190,7 +192,7 @@ class Encoder(nn.Module):
             outputs, hidden_t = self.rnn(packed_emb, hidden)
             if lengths:
                 outputs = unpack(outputs)[0]
-            return hidden_t, outputs
+            return hidden_t, outputs, topic_vec
 
 
 class Decoder(nn.Module):
@@ -235,6 +237,14 @@ class Decoder(nn.Module):
                     opt.rnn_size
                 )
 
+            # zeng: like context_gate which don't use the attention embedding from source, but the topic vec.
+            # self.topic_gate = None
+            # if opt.topic_gate is not None:
+            # 	self.topic_gate = ContextGateFactory(
+            # 		opt.topic_gate, input_size,
+            # 		opt.rnn_size, opt.rnn_size,
+            # 		opt.topic_vec_size)
+
         self.dropout = nn.Dropout(opt.dropout)
 
         # Std attention layer.
@@ -249,7 +259,10 @@ class Decoder(nn.Module):
                 opt.rnn_size, attn_type=opt.attention_type)
             self._copy = True
 
-    def forward(self, input, src, context, state):
+        # self.topic2vec_decoder = opt.topic2vec_decoder
+        # self.topic_type_decoder = opt.topic_type_decoder
+
+    def forward(self, input, src, context, state, topic=None):
         """
         Forward through the decoder.
 
@@ -355,6 +368,19 @@ class Decoder(nn.Module):
             outputs = torch.stack(outputs)
             for k in attns:
                 attns[k] = torch.stack(attns[k])
+
+            # zeng: topic + deocder
+            # outputs: len x batch x rnn_size
+            # topic_vec: batch x topic_vec_size x 1
+            # if self.topic2vec_decoder:
+            #     topic_repeat = topic.repeat(1, 1, outputs.size(0))
+            #     topic_repeat = topic_repeat.permute(2, 0, 1)
+            #     if self.topic_type_decoder == "sum":
+            #         assert outputs.size(2) == topic.size(1)
+            #         outputs = torch.add(outputs, topic_repeat)
+            #     elif self.topic_type_decoder == "concat":
+            #         outputs = torch.cat((outputs, topic_repeat), 2)
+
         return outputs, state, attns
 
 
@@ -419,13 +445,13 @@ class NMTModel(nn.Module):
         tgt = tgt[:-1]  # exclude last target from inputs
         
         # 1. encoder
-        enc_hidden, context = self.encoder(src, lengths)
+        enc_hidden, context, topic_vec = self.encoder(src, lengths)
 
         # 2. decoder
         enc_state = self.init_decoder_state(context, enc_hidden)
         out, dec_state, attns = self.decoder(tgt, src, context,
                                              enc_state if dec_state is None
-                                             else dec_state)
+                                             else dec_state, topic_vec)
         if self.multigpu:
             # Not yet supported on multi-gpu
             dec_state = None
@@ -506,6 +532,9 @@ class Topic2Vec(nn.Module):
             self.windows = [2, 3, 4]
             self.convs = nn.ModuleList([nn.Conv2d(1, opt.kernel_num, (w, opt.topic_vec_size)) for w in self.windows])
             self.full_connected = nn.Linear(len(self.windows)*opt.kernel_num, opt.topic_num)
+        elif self.topic_type == "moe":
+        	self.experts = nn.ModuleList([onmt.modules.BottleLinear(opt.word_vec_size, opt.topic_vec_size) for i in xrange(opt.experts_num)])
+        	self.gating = onmt.modules.BottleSoftmax()
         
         self.dropout = nn.Dropout(opt.dropout)
         self.softmax = nn.Softmax()
@@ -534,6 +563,12 @@ class Topic2Vec(nn.Module):
             x = self.dropout(x)
             topic_dist = self.softmax(self.full_connected(x)).unsqueeze(2)
             # print "topic_dist", topic_dist
+        elif self.topic_type == "moe":
+        	word_topic_weights = torch.stack([linear(input) for linear in self.linearList])
+        	gating = nn.BottleSoftmax(word_topic_weights).mul(word_topic_weights)
+
+        	topic_vec = torch.sum(gating, 0)
+
 
         topic_matrix_repeat = topic_matrix.expand(topic_dist.size(0), topic_matrix.size(0), topic_matrix.size(1)) # batch x topic_vec_size x topic_num
         topic_vec = torch.bmm(topic_matrix_repeat, topic_dist) # batch x topic_vec_size x 1
